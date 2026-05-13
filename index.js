@@ -5,7 +5,7 @@ import yahooFinance from 'yahoo-finance2';
 const app = express();
 app.use(cors());
 
-// 1. Endpoint: Intrinsic Value (Calculadora 1)
+// 1. Endpoint: Intrinsic Value
 app.get('/api/stock', async (req, res) => {
   try {
     const symbol = req.query.symbol;
@@ -22,7 +22,7 @@ app.get('/api/stock', async (req, res) => {
 
     res.json({ symbol: quote.symbol, currentPrice, epsTTM, currentGrowth, targetPE: targetPE.toFixed(2) });
   } catch (error) {
-    res.status(500).json({ error: 'Error fetching stock data.' });
+    res.status(500).json({ error: 'Error fetching stock data.', details: error.message });
   }
 });
 
@@ -34,7 +34,11 @@ app.get('/api/options/dates', async (req, res) => {
 
     const result = await yahooFinance.options(symbol);
     
-    // Yahoo devuelve timestamps (Unix). Los convertimos a formato legible YYYY-MM-DD
+    // PROTECCIÓN: Si la acción existe pero NO tiene mercado de opciones
+    if (!result || !result.expirationDates || result.expirationDates.length === 0) {
+      return res.json([]); // Devolvemos una lista vacía en lugar de un error
+    }
+
     const datesFormatted = result.expirationDates.map(ts => {
       const dateObj = new Date(ts * 1000);
       return { timestamp: ts, dateString: dateObj.toISOString().split('T')[0] };
@@ -42,7 +46,9 @@ app.get('/api/options/dates', async (req, res) => {
 
     res.json(datesFormatted);
   } catch (error) {
-    res.status(500).json({ error: 'Error fetching option dates.' });
+    console.error("Options Error:", error);
+    // Ahora enviamos el mensaje exacto de Yahoo para depurar
+    res.status(500).json({ error: 'Error fetching option dates.', details: error.message });
   }
 });
 
@@ -50,12 +56,16 @@ app.get('/api/options/dates', async (req, res) => {
 app.get('/api/options/chain', async (req, res) => {
   try {
     const symbol = req.query.symbol;
-    const dateTs = parseInt(req.query.date); // Timestamp
+    const dateTs = parseInt(req.query.date); 
     if (!symbol || !dateTs) return res.status(400).json({ error: 'Símbolo y fecha requeridos.' });
 
     const result = await yahooFinance.options(symbol, { date: dateTs });
     
-    // Extraemos solo las opciones "Call" (como Joe pidió en su video)
+    // PROTECCIÓN extra
+    if (!result || !result.options || result.options.length === 0) {
+      return res.json([]);
+    }
+
     const calls = result.options[0].calls.map(c => ({
       strike: c.strike,
       price: c.lastPrice
@@ -63,7 +73,8 @@ app.get('/api/options/chain', async (req, res) => {
 
     res.json(calls);
   } catch (error) {
-    res.status(500).json({ error: 'Error fetching option chain.' });
+    console.error("Chain Error:", error);
+    res.status(500).json({ error: 'Error fetching option chain.', details: error.message });
   }
 });
 
