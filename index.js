@@ -1,11 +1,10 @@
-const express = require('express');
-const cors = require('cors');
-const yahooFinance = require('yahoo-finance2').default;
+import express from 'express';
+import cors from 'cors';
+import yahooFinance from 'yahoo-finance2';
 
 const app = express();
 
-// ¡MAGIA PURA! Esto desactiva el bloqueo de seguridad (CORS) 
-// permitiendo que Webflow pueda leer los datos.
+// Desactiva el bloqueo de seguridad (CORS) permitiendo que Webflow pueda leer los datos
 app.use(cors());
 
 app.get('/api/stock', async (req, res) => {
@@ -27,7 +26,6 @@ app.get('/api/stock', async (req, res) => {
     const currentPrice = quote.regularMarketPrice || 0;
     const epsTTM = quote.trailingEps || quote.epsTrailingTwelveMonths || 0;
     
-    // El crecimiento viene en decimal (ej. 0.15 = 15%). Lo convertimos.
     const rawGrowth = quoteSummary.defaultKeyStatistics?.earningsQuarterlyGrowth || 0;
     const currentGrowth = (rawGrowth * 100).toFixed(2);
     
