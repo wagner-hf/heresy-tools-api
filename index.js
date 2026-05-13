@@ -5,7 +5,32 @@ import yahooFinance from 'yahoo-finance2';
 const app = express();
 app.use(cors());
 
-// 1. Endpoint: Intrinsic Value (Este funciona perfecto con la librería)
+// --- ADMINISTRADOR DE AUTENTICACIÓN DE YAHOO (Bypass de seguridad) ---
+let sessionCookie = '';
+let yahooCrumb = '';
+
+async function getYahooAuth() {
+  if (sessionCookie && yahooCrumb) return { cookie: sessionCookie, crumb: yahooCrumb };
+  try {
+    // 1. Simular visita para obtener la Cookie de sesión
+    const res = await fetch('https://fc.yahoo.com', {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
+    sessionCookie = res.headers.get('set-cookie')?.split(';')[0] || '';
+    
+    // 2. Usar la Cookie para obtener el Crumb (Token)
+    const resCrumb = await fetch('https://query1.finance.yahoo.com/v1/test/getcrumb', {
+      headers: { 'cookie': sessionCookie, 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
+    yahooCrumb = await resCrumb.text();
+  } catch (e) {
+    console.error("Auth error:", e);
+  }
+  return { cookie: sessionCookie, crumb: yahooCrumb };
+}
+// ---------------------------------------------------------------------
+
+// 1. Endpoint: Intrinsic Value
 app.get('/api/stock', async (req, res) => {
   try {
     const symbol = req.query.symbol;
@@ -26,28 +51,33 @@ app.get('/api/stock', async (req, res) => {
   }
 });
 
-// 2. Endpoint: Obtener las Fechas de Expiración (Bypass directo a Yahoo)
+// 2. Endpoint: Obtener las Fechas de Expiración
 app.get('/api/options/dates', async (req, res) => {
   try {
     const symbol = req.query.symbol;
     if (!symbol) return res.status(400).json({ error: 'Símbolo requerido.' });
 
-    // Conexión directa a la API oculta de Yahoo
-    const response = await fetch(`https://query2.finance.yahoo.com/v7/finance/options/${symbol}`, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+    // Obtenemos los tokens de seguridad y armamos la URL
+    const auth = await getYahooAuth();
+    const response = await fetch(`https://query2.finance.yahoo.com/v7/finance/options/${symbol}?crumb=${auth.crumb}`, {
+      headers: { 
+        'cookie': auth.cookie,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
     });
     const data = await response.json();
 
-    if (!data.optionChain.result || data.optionChain.result.length === 0) {
-      return res.json([]);
+    // Escudo Protector: Si Yahoo nos bloqueó, capturamos el error exacto sin colapsar
+    if (!data || !data.optionChain) {
+       throw new Error("Yahoo API Auth Error: " + JSON.stringify(data));
     }
 
-    const result = data.optionChain.result[0];
-    if (!result.expirationDates || result.expirationDates.length === 0) {
-      return res.json([]);
+    const result = data.optionChain.result;
+    if (!result || result.length === 0 || !result[0].expirationDates) {
+      return res.json([]); // No hay fechas
     }
 
-    const datesFormatted = result.expirationDates.map(ts => {
+    const datesFormatted = result[0].expirationDates.map(ts => {
       const dateObj = new Date(ts * 1000);
       return { timestamp: ts, dateString: dateObj.toISOString().split('T')[0] };
     });
@@ -66,22 +96,25 @@ app.get('/api/options/chain', async (req, res) => {
     const dateTs = parseInt(req.query.date); 
     if (!symbol || !dateTs) return res.status(400).json({ error: 'Símbolo y fecha requeridos.' });
 
-    // Conexión directa especificando la fecha exacta
-    const response = await fetch(`https://query2.finance.yahoo.com/v7/finance/options/${symbol}?date=${dateTs}`, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+    const auth = await getYahooAuth();
+    const response = await fetch(`https://query2.finance.yahoo.com/v7/finance/options/${symbol}?date=${dateTs}&crumb=${auth.crumb}`, {
+      headers: { 
+        'cookie': auth.cookie,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
     });
     const data = await response.json();
     
-    if (!data.optionChain.result || data.optionChain.result.length === 0) {
+    if (!data || !data.optionChain) {
+       throw new Error("Yahoo API Auth Error: " + JSON.stringify(data));
+    }
+
+    const result = data.optionChain.result;
+    if (!result || result.length === 0 || !result[0].options || result[0].options.length === 0) {
       return res.json([]);
     }
 
-    const result = data.optionChain.result[0];
-    if (!result.options || result.options.length === 0) {
-      return res.json([]);
-    }
-
-    const calls = result.options[0].calls.map(c => ({
+    const calls = result[0].options[0].calls.map(c => ({
       strike: c.strike,
       price: c.lastPrice
     }));
