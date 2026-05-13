@@ -5,7 +5,7 @@ import yahooFinance from 'yahoo-finance2';
 const app = express();
 app.use(cors());
 
-// 1. Endpoint: Intrinsic Value
+// 1. Endpoint: Intrinsic Value (Este funciona perfecto con la librería)
 app.get('/api/stock', async (req, res) => {
   try {
     const symbol = req.query.symbol;
@@ -26,17 +26,25 @@ app.get('/api/stock', async (req, res) => {
   }
 });
 
-// 2. Endpoint: Obtener las Fechas de Expiración (Calculadora de Opciones)
+// 2. Endpoint: Obtener las Fechas de Expiración (Bypass directo a Yahoo)
 app.get('/api/options/dates', async (req, res) => {
   try {
     const symbol = req.query.symbol;
     if (!symbol) return res.status(400).json({ error: 'Símbolo requerido.' });
 
-    const result = await yahooFinance.options(symbol);
-    
-    // PROTECCIÓN: Si la acción existe pero NO tiene mercado de opciones
-    if (!result || !result.expirationDates || result.expirationDates.length === 0) {
-      return res.json([]); // Devolvemos una lista vacía en lugar de un error
+    // Conexión directa a la API oculta de Yahoo
+    const response = await fetch(`https://query2.finance.yahoo.com/v7/finance/options/${symbol}`, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+    });
+    const data = await response.json();
+
+    if (!data.optionChain.result || data.optionChain.result.length === 0) {
+      return res.json([]);
+    }
+
+    const result = data.optionChain.result[0];
+    if (!result.expirationDates || result.expirationDates.length === 0) {
+      return res.json([]);
     }
 
     const datesFormatted = result.expirationDates.map(ts => {
@@ -47,7 +55,6 @@ app.get('/api/options/dates', async (req, res) => {
     res.json(datesFormatted);
   } catch (error) {
     console.error("Options Error:", error);
-    // Ahora enviamos el mensaje exacto de Yahoo para depurar
     res.status(500).json({ error: 'Error fetching option dates.', details: error.message });
   }
 });
@@ -59,10 +66,18 @@ app.get('/api/options/chain', async (req, res) => {
     const dateTs = parseInt(req.query.date); 
     if (!symbol || !dateTs) return res.status(400).json({ error: 'Símbolo y fecha requeridos.' });
 
-    const result = await yahooFinance.options(symbol, { date: dateTs });
+    // Conexión directa especificando la fecha exacta
+    const response = await fetch(`https://query2.finance.yahoo.com/v7/finance/options/${symbol}?date=${dateTs}`, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+    });
+    const data = await response.json();
     
-    // PROTECCIÓN extra
-    if (!result || !result.options || result.options.length === 0) {
+    if (!data.optionChain.result || data.optionChain.result.length === 0) {
+      return res.json([]);
+    }
+
+    const result = data.optionChain.result[0];
+    if (!result.options || result.options.length === 0) {
       return res.json([]);
     }
 
