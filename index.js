@@ -3,51 +3,69 @@ import cors from 'cors';
 import yahooFinance from 'yahoo-finance2';
 
 const app = express();
-
-// Desactiva el bloqueo de seguridad (CORS) permitiendo que Webflow pueda leer los datos
 app.use(cors());
 
+// 1. Endpoint: Intrinsic Value (Calculadora 1)
 app.get('/api/stock', async (req, res) => {
   try {
     const symbol = req.query.symbol;
-    if (!symbol) {
-      return res.status(400).json({ error: 'Debes enviar un símbolo.' });
-    }
+    if (!symbol) return res.status(400).json({ error: 'Símbolo requerido.' });
 
-    // 1. Pedir datos principales a Yahoo Finance
     const quote = await yahooFinance.quote(symbol);
-    
-    // 2. Pedir datos estadísticos extra (para el Growth Rate)
-    const quoteSummary = await yahooFinance.quoteSummary(symbol, { 
-      modules: ['defaultKeyStatistics'] 
-    });
+    const quoteSummary = await yahooFinance.quoteSummary(symbol, { modules: ['defaultKeyStatistics'] });
 
-    // 3. Extraer y limpiar los datos exactos que Webflow necesita
     const currentPrice = quote.regularMarketPrice || 0;
     const epsTTM = quote.trailingEps || quote.epsTrailingTwelveMonths || 0;
-    
     const rawGrowth = quoteSummary.defaultKeyStatistics?.earningsQuarterlyGrowth || 0;
     const currentGrowth = (rawGrowth * 100).toFixed(2);
-    
     const targetPE = quote.trailingPE || quote.forwardPE || 0;
 
-    // 4. Enviar la respuesta limpia a Webflow
-    res.json({
-      symbol: quote.symbol,
-      currentPrice: currentPrice,
-      epsTTM: epsTTM,
-      currentGrowth: currentGrowth,
-      targetPE: targetPE.toFixed(2)
-    });
-
+    res.json({ symbol: quote.symbol, currentPrice, epsTTM, currentGrowth, targetPE: targetPE.toFixed(2) });
   } catch (error) {
-    console.error("Error fetching data:", error);
-    res.status(500).json({ error: 'Símbolo no encontrado o datos no disponibles.' });
+    res.status(500).json({ error: 'Error fetching stock data.' });
   }
 });
 
-// Arrancar el servidor
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`API Proxy corriendo en el puerto ${PORT}`);
+// 2. Endpoint: Obtener las Fechas de Expiración (Calculadora de Opciones)
+app.get('/api/options/dates', async (req, res) => {
+  try {
+    const symbol = req.query.symbol;
+    if (!symbol) return res.status(400).json({ error: 'Símbolo requerido.' });
+
+    const result = await yahooFinance.options(symbol);
+    
+    // Yahoo devuelve timestamps (Unix). Los convertimos a formato legible YYYY-MM-DD
+    const datesFormatted = result.expirationDates.map(ts => {
+      const dateObj = new Date(ts * 1000);
+      return { timestamp: ts, dateString: dateObj.toISOString().split('T')[0] };
+    });
+
+    res.json(datesFormatted);
+  } catch (error) {
+    res.status(500).json({ error: 'Error fetching option dates.' });
+  }
 });
+
+// 3. Endpoint: Obtener la cadena de opciones (Precios y Strikes)
+app.get('/api/options/chain', async (req, res) => {
+  try {
+    const symbol = req.query.symbol;
+    const dateTs = parseInt(req.query.date); // Timestamp
+    if (!symbol || !dateTs) return res.status(400).json({ error: 'Símbolo y fecha requeridos.' });
+
+    const result = await yahooFinance.options(symbol, { date: dateTs });
+    
+    // Extraemos solo las opciones "Call" (como Joe pidió en su video)
+    const calls = result.options[0].calls.map(c => ({
+      strike: c.strike,
+      price: c.lastPrice
+    }));
+
+    res.json(calls);
+  } catch (error) {
+    res.status(500).json({ error: 'Error fetching option chain.' });
+  }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`API Proxy corriendo en puerto ${PORT}`));
