@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "API Proxy para Heresy Financial Calculators",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "start": "node index.js"
   },
