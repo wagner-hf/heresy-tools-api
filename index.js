@@ -10,16 +10,30 @@ let yahooCrumb = '';
 
 async function getYahooAuth() {
   if (sessionCookie && yahooCrumb) return { cookie: sessionCookie, crumb: yahooCrumb };
+  
   try {
+    // 1. Obtener cookie
     const res = await fetch('https://fc.yahoo.com', {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' }
     });
-    sessionCookie = res.headers.get('set-cookie')?.split(';')[0] || '';
     
-    const resCrumb = await fetch('https://query1.finance.yahoo.com/v1/test/getcrumb', {
-      headers: { 'cookie': sessionCookie, 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    // Yahoo envía múltiples cookies, necesitamos la que se llama 'B' o la sesión
+    const cookies = res.headers.raw()['set-cookie'];
+    sessionCookie = cookies ? cookies.map(c => c.split(';')[0]).join('; ') : '';
+    
+    // 2. Obtener Crumb usando la cookie recién obtenida
+    const resCrumb = await fetch('https://query2.finance.yahoo.com/v1/test/getcrumb', {
+      headers: { 
+        'cookie': sessionCookie, 
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' 
+      }
     });
     yahooCrumb = await resCrumb.text();
+    
+    // Si falla el crumb, reseteamos para reintentar en la próxima petición
+    if (!yahooCrumb || yahooCrumb.length > 100) { 
+        sessionCookie = ''; yahooCrumb = '';
+    }
   } catch (e) {
     console.error("Auth error:", e);
   }
