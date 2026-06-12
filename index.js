@@ -1,6 +1,9 @@
 import express from 'express';
 import cors from 'cors';
-import yahooFinance from 'yahoo-finance2'; // La nueva librería mágica
+import yfPkg from 'yahoo-finance2'; 
+
+// FIX DE IMPORTACIÓN: Resuelve el error "is not a function" en ES Modules
+const yahooFinance = yfPkg.default || yfPkg;
 
 const app = express();
 app.use(cors());
@@ -21,7 +24,7 @@ app.get('/api/stock', async (req, res) => {
     const currentPrice = quote.regularMarketPrice || 0;
     const epsTTM = quote.trailingEps || 0;
     
-    // La librería a veces devuelve el Growth como decimal, lo aseguramos a formato porcentaje
+    // La librería aplana los datos automáticamente, así que es un número directo
     const rawGrowth = stats.earningsQuarterlyGrowth || 0; 
     const currentGrowth = (rawGrowth * 100).toFixed(2);
     const targetPE = quote.trailingPE || quote.forwardPE || 0;
@@ -45,6 +48,7 @@ app.get('/api/options/dates', async (req, res) => {
     const symbol = req.query.symbol;
     if (!symbol) return res.status(400).json({ error: 'Símbolo requerido.' });
 
+    // ESTO YA NO FALLARÁ
     const optionsData = await yahooFinance.options(symbol);
 
     if (!optionsData || !optionsData.expirationDates) {
