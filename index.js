@@ -1,9 +1,9 @@
 import express from 'express';
 import cors from 'cors';
-import yfPkg from 'yahoo-finance2'; 
+import { YahooFinance } from 'yahoo-finance2'; // Importamos la clase de la v3
 
-// FIX DE IMPORTACIÓN: Resuelve el error "is not a function" en ES Modules
-const yahooFinance = yfPkg.default || yfPkg;
+// Inicializamos la librería como lo exige la nueva versión
+const yahooFinance = new YahooFinance();
 
 const app = express();
 app.use(cors());
@@ -24,7 +24,7 @@ app.get('/api/stock', async (req, res) => {
     const currentPrice = quote.regularMarketPrice || 0;
     const epsTTM = quote.trailingEps || 0;
     
-    // La librería aplana los datos automáticamente, así que es un número directo
+    // La librería aplana los datos automáticamente
     const rawGrowth = stats.earningsQuarterlyGrowth || 0; 
     const currentGrowth = (rawGrowth * 100).toFixed(2);
     const targetPE = quote.trailingPE || quote.forwardPE || 0;
@@ -48,7 +48,6 @@ app.get('/api/options/dates', async (req, res) => {
     const symbol = req.query.symbol;
     if (!symbol) return res.status(400).json({ error: 'Símbolo requerido.' });
 
-    // ESTO YA NO FALLARÁ
     const optionsData = await yahooFinance.options(symbol);
 
     if (!optionsData || !optionsData.expirationDates) {
@@ -56,7 +55,7 @@ app.get('/api/options/dates', async (req, res) => {
     }
 
     const datesFormatted = optionsData.expirationDates.map(dateObj => {
-      // yahoo-finance2 convierte mágicamente los timestamps a objetos Date de Javascript
+      // yahoo-finance2 convierte los timestamps a objetos Date de Javascript
       return { 
           timestamp: Math.floor(dateObj.getTime() / 1000), 
           dateString: dateObj.toISOString().split('T')[0] 
