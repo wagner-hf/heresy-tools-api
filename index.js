@@ -1,59 +1,9 @@
 import express from 'express';
 import cors from 'cors';
+import yahooFinance from 'yahoo-finance2'; // La nueva librería mágica
 
 const app = express();
 app.use(cors());
-
-// --- ADMINISTRADOR DE AUTENTICACIÓN DE YAHOO (Bypass de seguridad mejorado) ---
-let sessionCookie = '';
-let yahooCrumb = '';
-
-async function getYahooAuth() {
-  if (sessionCookie && yahooCrumb) return { cookie: sessionCookie, crumb: yahooCrumb };
-  
-  try {
-    console.log("1. Extrayendo Cookie de Yahoo Finance...");
-    // Simulamos una visita real a la página principal de Yahoo Finance
-    const res = await fetch('https://finance.yahoo.com', {
-      headers: { 
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5'
-      }
-    });
-    
-    // Obtener la cookie maestra (usualmente empieza con B=)
-    const setCookie = res.headers.get('set-cookie');
-    if (setCookie) {
-      const match = setCookie.match(/(B=[^;]+)/);
-      sessionCookie = match ? match[1] : setCookie.split(';')[0];
-    }
-
-    console.log("2. Solicitando Crumb con la cookie...");
-    // Usamos query1 (suele ser menos restrictivo que query2 para el crumb)
-    const resCrumb = await fetch('https://query1.finance.yahoo.com/v1/test/getcrumb', {
-      headers: { 
-        'cookie': sessionCookie, 
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Accept-Language': 'en-US,en;q=0.5'
-      }
-    });
-    
-    yahooCrumb = await resCrumb.text();
-    
-    // Validación crítica
-    if (!yahooCrumb || yahooCrumb.includes('<html') || yahooCrumb.length > 30) { 
-        console.error("Auth failed. El crumb devuelto es HTML o inválido.");
-        sessionCookie = ''; yahooCrumb = '';
-    } else {
-        console.log("Auth Exitosa! Crumb obtenido.");
-    }
-  } catch (e) {
-    console.error("Auth error:", e);
-  }
-  return { cookie: sessionCookie, crumb: yahooCrumb };
-}
-// ---------------------------------------------------------------------
 
 // 1. Endpoint: Intrinsic Value (Stock Data)
 app.get('/api/stock', async (req, res) => {
@@ -61,33 +11,28 @@ app.get('/api/stock', async (req, res) => {
     const symbol = req.query.symbol;
     if (!symbol) return res.status(400).json({ error: 'Símbolo requerido.' });
 
-    const auth = await getYahooAuth();
-    const headers = { 
-      'cookie': auth.cookie,
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    };
-
-    // 1.1 Pedir Precio, EPS, y PE
-    const quoteRes = await fetch(`https://query2.finance.yahoo.com/v7/finance/quote?symbols=${symbol}&crumb=${auth.crumb}`, { headers });
-    const quoteData = await quoteRes.json();
-
-    if (!quoteData.quoteResponse || !quoteData.quoteResponse.result || quoteData.quoteResponse.result.length === 0) {
-      return res.status(404).json({ error: 'Símbolo no encontrado.' });
-    }
-    const quote = quoteData.quoteResponse.result[0];
-
-    // 1.2 Pedir Estadísticas (Growth Rate)
-    const statRes = await fetch(`https://query2.finance.yahoo.com/v10/finance/quoteSummary/${symbol}?modules=defaultKeyStatistics&crumb=${auth.crumb}`, { headers });
-    const statData = await statRes.json();
-    const stats = statData.quoteSummary?.result?.[0]?.defaultKeyStatistics || {};
+    // Pedimos la cotización básica (precio, EPS, PE)
+    const quote = await yahooFinance.quote(symbol);
+    
+    // Pedimos las estadísticas clave (para el Growth Rate)
+    const summary = await yahooFinance.quoteSummary(symbol, { modules: ['defaultKeyStatistics'] });
+    const stats = summary.defaultKeyStatistics || {};
 
     const currentPrice = quote.regularMarketPrice || 0;
-    const epsTTM = quote.epsTrailingTwelveMonths || quote.trailingEps || 0;
-    const rawGrowth = stats.earningsQuarterlyGrowth?.raw || 0; 
+    const epsTTM = quote.trailingEps || 0;
+    
+    // La librería a veces devuelve el Growth como decimal, lo aseguramos a formato porcentaje
+    const rawGrowth = stats.earningsQuarterlyGrowth || 0; 
     const currentGrowth = (rawGrowth * 100).toFixed(2);
     const targetPE = quote.trailingPE || quote.forwardPE || 0;
 
-    res.json({ symbol: quote.symbol, currentPrice, epsTTM, currentGrowth, targetPE: targetPE.toFixed(2) });
+    res.json({ 
+        symbol: quote.symbol, 
+        currentPrice, 
+        epsTTM, 
+        currentGrowth, 
+        targetPE: targetPE.toFixed(2) 
+    });
   } catch (error) {
     console.error("Stock Error:", error);
     res.status(500).json({ error: 'Error fetching stock data.', details: error.message });
@@ -100,40 +45,23 @@ app.get('/api/options/dates', async (req, res) => {
     const symbol = req.query.symbol;
     if (!symbol) return res.status(400).json({ error: 'Símbolo requerido.' });
 
-    const auth = await getYahooAuth();
-    const response = await fetch(`https://query2.finance.yahoo.com/v7/finance/options/${symbol}?crumb=${auth.crumb}`, {
-      headers: { 
-        'cookie': auth.cookie,
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
-    });
-    
-    // Prevenimos crasheos si Yahoo devuelve texto en lugar de JSON
-    const textData = await response.text();
-    let data;
-    try {
-        data = JSON.parse(textData);
-    } catch(err) {
-        throw new Error("Respuesta inválida de Yahoo. Probable bloqueo de IP.");
-    }
+    const optionsData = await yahooFinance.options(symbol);
 
-    if (!data || !data.optionChain) throw new Error("Yahoo API Auth Error");
-
-    const result = data.optionChain.result;
-    if (!result || result.length === 0 || !result[0].expirationDates) {
+    if (!optionsData || !optionsData.expirationDates) {
       return res.json([]); 
     }
 
-    const datesFormatted = result[0].expirationDates.map(ts => {
-      const dateObj = new Date(ts * 1000);
-      return { timestamp: ts, dateString: dateObj.toISOString().split('T')[0] };
+    const datesFormatted = optionsData.expirationDates.map(dateObj => {
+      // yahoo-finance2 convierte mágicamente los timestamps a objetos Date de Javascript
+      return { 
+          timestamp: Math.floor(dateObj.getTime() / 1000), 
+          dateString: dateObj.toISOString().split('T')[0] 
+      };
     });
 
     res.json(datesFormatted);
   } catch (error) {
     console.error("Options Error:", error);
-    // Limpiamos las credenciales si fallan para que intente de nuevo en la siguiente petición
-    sessionCookie = ''; yahooCrumb = '';
     res.status(500).json({ error: 'Error fetching option dates.', details: error.message });
   }
 });
@@ -143,32 +71,18 @@ app.get('/api/options/chain', async (req, res) => {
   try {
     const symbol = req.query.symbol;
     const dateTs = parseInt(req.query.date); 
+    
     if (!symbol || !dateTs) return res.status(400).json({ error: 'Símbolo y fecha requeridos.' });
 
-    const auth = await getYahooAuth();
-    const response = await fetch(`https://query2.finance.yahoo.com/v7/finance/options/${symbol}?date=${dateTs}&crumb=${auth.crumb}`, {
-      headers: { 
-        'cookie': auth.cookie,
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
-    });
+    // Convertimos el timestamp a Date para que la librería busque ese día específico
+    const dateObj = new Date(dateTs * 1000);
+    const optionsData = await yahooFinance.options(symbol, { date: dateObj });
     
-    const textData = await response.text();
-    let data;
-    try {
-        data = JSON.parse(textData);
-    } catch(err) {
-        throw new Error("Respuesta inválida de Yahoo. Probable bloqueo de IP.");
-    }
-    
-    if (!data || !data.optionChain) throw new Error("Yahoo API Auth Error");
-
-    const result = data.optionChain.result;
-    if (!result || result.length === 0 || !result[0].options || result[0].options.length === 0) {
+    if (!optionsData || !optionsData.options || optionsData.options.length === 0) {
       return res.json([]);
     }
 
-    const calls = result[0].options[0].calls.map(c => ({
+    const calls = optionsData.options[0].calls.map(c => ({
       strike: c.strike,
       price: c.lastPrice
     }));
@@ -176,7 +90,6 @@ app.get('/api/options/chain', async (req, res) => {
     res.json(calls);
   } catch (error) {
     console.error("Chain Error:", error);
-    sessionCookie = ''; yahooCrumb = '';
     res.status(500).json({ error: 'Error fetching option chain.', details: error.message });
   }
 });
