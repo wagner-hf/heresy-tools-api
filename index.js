@@ -1,8 +1,8 @@
 import express from 'express';
 import cors from 'cors';
-import { YahooFinance } from 'yahoo-finance2'; // Importamos la clase de la v3
+import YahooFinance from 'yahoo-finance2'; // FIX: Importación limpia, sin las llaves {}
 
-// Inicializamos la librería como lo exige la nueva versión
+// Inicializamos la librería correctamente para la v3
 const yahooFinance = new YahooFinance();
 
 const app = express();
