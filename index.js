@@ -4,7 +4,7 @@ import cors from 'cors';
 const app = express();
 app.use(cors());
 
-// --- ADMINISTRADOR DE AUTENTICACIÓN DE YAHOO (Bypass de seguridad) ---
+// --- ADMINISTRADOR DE AUTENTICACIÓN DE YAHOO (Bypass de seguridad mejorado) ---
 let sessionCookie = '';
 let yahooCrumb = '';
 
@@ -12,28 +12,41 @@ async function getYahooAuth() {
   if (sessionCookie && yahooCrumb) return { cookie: sessionCookie, crumb: yahooCrumb };
   
   try {
-    // Yahoo ahora requiere una cookie de sesión activa vinculada al crumb
-    const res = await fetch('https://fc.yahoo.com', {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' }
-    });
-    
-    // Obtener todas las cookies
-    const setCookie = res.headers.get('set-cookie');
-    sessionCookie = setCookie ? setCookie.split(';')[0] : '';
-    
-    // Obtener el Crumb usando esa misma sesión
-    const resCrumb = await fetch('https://query2.finance.yahoo.com/v1/test/getcrumb', {
+    console.log("1. Extrayendo Cookie de Yahoo Finance...");
+    // Simulamos una visita real a la página principal de Yahoo Finance
+    const res = await fetch('https://finance.yahoo.com', {
       headers: { 
-        'cookie': sessionCookie, 
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' 
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5'
       }
     });
+    
+    // Obtener la cookie maestra (usualmente empieza con B=)
+    const setCookie = res.headers.get('set-cookie');
+    if (setCookie) {
+      const match = setCookie.match(/(B=[^;]+)/);
+      sessionCookie = match ? match[1] : setCookie.split(';')[0];
+    }
+
+    console.log("2. Solicitando Crumb con la cookie...");
+    // Usamos query1 (suele ser menos restrictivo que query2 para el crumb)
+    const resCrumb = await fetch('https://query1.finance.yahoo.com/v1/test/getcrumb', {
+      headers: { 
+        'cookie': sessionCookie, 
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.5'
+      }
+    });
+    
     yahooCrumb = await resCrumb.text();
     
-    // Validación crítica: si el crumb es HTML (largo), falló la auth
-    if (!yahooCrumb || yahooCrumb.length > 20) { 
-        console.error("Auth failed, crumb invalid:", yahooCrumb);
+    // Validación crítica
+    if (!yahooCrumb || yahooCrumb.includes('<html') || yahooCrumb.length > 30) { 
+        console.error("Auth failed. El crumb devuelto es HTML o inválido.");
         sessionCookie = ''; yahooCrumb = '';
+    } else {
+        console.log("Auth Exitosa! Crumb obtenido.");
     }
   } catch (e) {
     console.error("Auth error:", e);
@@ -42,7 +55,7 @@ async function getYahooAuth() {
 }
 // ---------------------------------------------------------------------
 
-// 1. Endpoint: Intrinsic Value (Stock Data) - ¡AHORA DIRECTO Y SIN LIBRERÍAS!
+// 1. Endpoint: Intrinsic Value (Stock Data)
 app.get('/api/stock', async (req, res) => {
   try {
     const symbol = req.query.symbol;
@@ -94,7 +107,15 @@ app.get('/api/options/dates', async (req, res) => {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       }
     });
-    const data = await response.json();
+    
+    // Prevenimos crasheos si Yahoo devuelve texto en lugar de JSON
+    const textData = await response.text();
+    let data;
+    try {
+        data = JSON.parse(textData);
+    } catch(err) {
+        throw new Error("Respuesta inválida de Yahoo. Probable bloqueo de IP.");
+    }
 
     if (!data || !data.optionChain) throw new Error("Yahoo API Auth Error");
 
@@ -111,6 +132,8 @@ app.get('/api/options/dates', async (req, res) => {
     res.json(datesFormatted);
   } catch (error) {
     console.error("Options Error:", error);
+    // Limpiamos las credenciales si fallan para que intente de nuevo en la siguiente petición
+    sessionCookie = ''; yahooCrumb = '';
     res.status(500).json({ error: 'Error fetching option dates.', details: error.message });
   }
 });
@@ -129,7 +152,14 @@ app.get('/api/options/chain', async (req, res) => {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       }
     });
-    const data = await response.json();
+    
+    const textData = await response.text();
+    let data;
+    try {
+        data = JSON.parse(textData);
+    } catch(err) {
+        throw new Error("Respuesta inválida de Yahoo. Probable bloqueo de IP.");
+    }
     
     if (!data || !data.optionChain) throw new Error("Yahoo API Auth Error");
 
@@ -146,6 +176,7 @@ app.get('/api/options/chain', async (req, res) => {
     res.json(calls);
   } catch (error) {
     console.error("Chain Error:", error);
+    sessionCookie = ''; yahooCrumb = '';
     res.status(500).json({ error: 'Error fetching option chain.', details: error.message });
   }
 });
