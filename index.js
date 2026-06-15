@@ -1,15 +1,15 @@
 import express from 'express';
 import cors from 'cors';
-import YahooFinance from 'yahoo-finance2'; 
+import YahooFinance from 'yahoo-finance2'; // La importación limpia que arreglamos antes
 
 const app = express();
 app.use(cors());
 
-// --- CREDENCIALES DE ALPACA ---
-// (Nota: En el futuro, es mejor poner esto en Variables de Entorno de Render)
+// --- CREDENCIALES OFICIALES DE ALPACA ---
 const ALPACA_KEY = 'AKNNLBFLFLREOELC2SUTRSB7J3';
 const ALPACA_SECRET = '7o4kqGMtyh3JsJW1jsuCNKpnenZzPTo1cpaPE6GpBNjE';
-const ALPACA_URL = 'https://data.alpaca.markets/v1beta1'; 
+// Usamos la URL correcta según la documentación (v2)
+const ALPACA_URL = 'https://api.alpaca.markets/v2'; 
 
 const alpacaHeaders = {
   'APCA-API-KEY-ID': ALPACA_KEY,
@@ -17,6 +17,7 @@ const alpacaHeaders = {
   'accept': 'application/json'
 };
 
+// Inicializamos Yahoo para el Intrinsic Value
 const yahooFinance = new YahooFinance();
 
 // 1. Endpoint: Intrinsic Value (Se queda con Yahoo temporalmente)
@@ -42,24 +43,24 @@ app.get('/api/stock', async (req, res) => {
   }
 });
 
-// 2. Endpoint: Obtener Fechas de Opciones (AHORA CON ALPACA)
+// 2. Endpoint: Obtener Fechas de Opciones (Alpaca v2)
 app.get('/api/options/dates', async (req, res) => {
   try {
     const symbol = req.query.symbol;
     if (!symbol) return res.status(400).json({ error: 'Símbolo requerido.' });
 
-    // Pedimos a Alpaca todos los contratos activos de ese símbolo
-    const response = await fetch(`${ALPACA_URL}/options/contracts?underlying_symbols=${symbol}&status=active`, { headers: alpacaHeaders });
+    // Añadimos limit=10000 para asegurarnos de traer la mayor cantidad de fechas posible
+    const response = await fetch(`${ALPACA_URL}/options/contracts?underlying_symbols=${symbol}&status=active&limit=10000`, { headers: alpacaHeaders });
     const data = await response.json();
 
     if (!data.option_contracts || data.option_contracts.length === 0) {
       return res.json([]); 
     }
 
-    // Extraemos fechas únicas
+    // Extraemos las fechas únicas
     const uniqueDates = [...new Set(data.option_contracts.map(c => c.expiration_date))];
     
-    // Formateamos para que el frontend lo entienda igual que antes
+    // Formateamos para el frontend
     const datesFormatted = uniqueDates.sort().map(dateStr => {
       return { 
           timestamp: Math.floor(new Date(dateStr).getTime() / 1000), 
@@ -74,7 +75,7 @@ app.get('/api/options/dates', async (req, res) => {
   }
 });
 
-// 3. Endpoint: Obtener Cadena de Opciones (AHORA CON ALPACA)
+// 3. Endpoint: Obtener Cadena de Opciones (Alpaca v2)
 app.get('/api/options/chain', async (req, res) => {
   try {
     const symbol = req.query.symbol;
@@ -82,36 +83,28 @@ app.get('/api/options/chain', async (req, res) => {
     
     if (!symbol || !dateTs) return res.status(400).json({ error: 'Símbolo y fecha requeridos.' });
 
-    // 1. Convertimos el timestamp que manda tu frontend de vuelta a "YYYY-MM-DD"
+    // Convertimos el timestamp a "YYYY-MM-DD"
     const dateObj = new Date(dateTs * 1000);
     const dateString = dateObj.toISOString().split('T')[0];
 
-    // 2. Buscamos en Alpaca los contratos Calls para esa fecha específica
-    const contractsRes = await fetch(`${ALPACA_URL}/options/contracts?underlying_symbols=${symbol}&expiration_date_eq=${dateString}&type=call`, { headers: alpacaHeaders });
+    // Buscamos los Call para esa fecha exacta usando los filtros de Alpaca
+    const contractsRes = await fetch(`${ALPACA_URL}/options/contracts?underlying_symbols=${symbol}&status=active&expiration_date_gte=${dateString}&expiration_date_lte=${dateString}&type=call&limit=1000`, { headers: alpacaHeaders });
     const contractsData = await contractsRes.json();
 
     if (!contractsData.option_contracts || contractsData.option_contracts.length === 0) {
       return res.json([]);
     }
 
-    // 3. Extraemos los símbolos de esos contratos (ej. AAPL240119C00150000)
-    const optionSymbols = contractsData.option_contracts.map(c => c.symbol).join(',');
-
-    // 4. Pedimos los precios actuales de esos contratos (Snapshots)
-    const snapshotsRes = await fetch(`${ALPACA_URL}/options/snapshots?symbols=${optionSymbols}`, { headers: alpacaHeaders });
-    const snapshotsData = await snapshotsRes.json();
-
-    // 5. Cruzamos la información (Strike + Precio)
+    // Ya no necesitamos pedir los Snapshots porque "close_price" viene incluido
     const calls = contractsData.option_contracts.map(contract => {
-      const snap = snapshotsData.snapshots[contract.symbol];
-      // Usamos el último precio de trade, si no hay, usamos 0
-      const price = snap && snap.latestTrade ? snap.latestTrade.p : 0; 
+      // Si Alpaca no tiene el close_price, devuelve null, así que usamos 0 como respaldo
+      const price = parseFloat(contract.close_price || 0); 
       
       return {
         strike: parseFloat(contract.strike_price),
         price: price
       };
-    }).filter(c => c.price > 0); // Filtramos los que tengan precio 0 para limpiar la tabla
+    }).filter(c => c.price > 0); // Ocultamos los que no tengan precio para no ensuciar la gráfica
 
     // Ordenamos por strike de menor a mayor
     calls.sort((a, b) => a.strike - b.strike);
